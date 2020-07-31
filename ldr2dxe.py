@@ -21,6 +21,7 @@
 import ctypes
 import sys
 import struct
+import binascii
 
 c_uint8 = ctypes.c_uint8
 
@@ -47,57 +48,66 @@ if __name__ == "__main__":
 	infilename = sys.argv[1]
 	outfilename = sys.argv[2]
 	infile = open(infilename, "rb") # TODO: try/catch for file open
-	# read the first 4 Bytes of the in file in reverse order
-	# because LDR is little endian
-	header = infile.read(4)[::-1]
-	# check if the header has the LDR identifier
-	if header[0] != "\xAD":
-		print "The infile doesn't look like an LDR file, the Header identifier is not 0xAD"
-		exit(1)
-	# check the first header flags. Should be "first" AND ("ignore" OR "Final")
 	flags = Flags()
-	flags.asbyte = ord(header[2])
-	if flags.b.first != 1:
-		print "The infile doesn't look like an LDR file, the flags in the first Header don't contain the 'first' bit"
-		exit(1)
-	# check if the Target address of the first block is the default start address (0xFFA00000)
-	target = infile.read(4)[::-1] #read it like big endian
-	if(target != '\xFF\xA0\x00\x00'):
-		print "The infile doesn't look like an LDR file, the target address of the first block is not 0xFFA00000"
-		exit(1)
-	# check if the byte count of the first block is 0 (should be)
-	bytecount = struct.unpack('i', infile.read(4))[0] 
-	if(bytecount != 0):
-		print "The infile doesn't look like an LDR file, the bytecount of the first block is not 0"
-		exit(1)
-	# last header part of the first block is the start offset of the next DXE
-	nextDXE = struct.unpack('i', infile.read(4))[0]
-	print '[working] The infile looks like an LDR file. First Block OK, next DXE is at %X' % nextDXE
-	
-	# open the outfile
-	outfile = open(outfilename, "wb") # TODO: try/catch for file open
+	outfile = None
 
 	# main parsing loop: 1) check next header 2) parse flags 3) append content to outfile
-	i=1
+	block=1
+	dxe=0
 	for header in iter(lambda: infile.read(4)[::-1], ""):
-	#header = infile.read(4)[::-1] # remove this line after the above while loop is coded
-		target = infile.read(4)[::-1] # TODO: check for each read if EOF and exit with error message "infile ended abruptly"
-		bytecount = struct.unpack('i', infile.read(4))[0]
-		argument = infile.read(4)
+		# read the first 4 Bytes of the in file in reverse order
+		# because LDR is little endian
+		target_bytes = infile.read(4)[::-1] # TODO: check for each read if EOF and exit with error message "infile ended abruptly"
+		bytecount_bytes = infile.read(4)
+		bytecount = struct.unpack('i', bytecount_bytes)[0]
+		argument_bytes = infile.read(4)
 		#check if the header is still a valid LDR header
 		if(header[0] != '\xAD'):
-			print "The infile doesn't look like an LDR file, one of the Header identifiers is not 0xAD"
+			print "The infile doesn't look like an DXE Part, one of the Header identifiers is not 0xAD"
 			exit(1)
 		flags.asbyte = ord(header[2])
-		if(flags.b.fill == 1):
-			for _ in range(bytecount):
-				outfile.write(argument)
-		else:
+
+		# check the first header flags. Should be "first" AND ("ignore" OR "Final")
+		if block == 1 and flags.b.first != 1:
+			print "The infile doesn't look like an DXE Part, the flags in the first Header don't contain the 'first' bit"
+			exit(1)
+
+		if (flags.b.first == 1):
+			# check if the Target address of the first block is the default start address (0xFFA00000)
+			if(target_bytes != '\xFF\xA0\x00\x00'):
+				print "The infile doesn't look like an DXE part, the target address of the first block is not 0xFFA00000"
+				exit(1)
+			# check if the byte count of the first block is 0 (should be)
+			if(bytecount != 0):
+				print "The infile doesn't look like an LDR file, the bytecount of the first block is not 0"
+				exit(1)
+			# last header part of the first block is the start offset of the next DXE
+			nextDXE = struct.unpack('i', argument_bytes)[0]
+			print '[working] The infile looks like an DXE part. First Block OK, next DXE is at %X' % nextDXE
+			# open the outfile
+			if outfile != None:
+				outfile.close()
+			dxe += 1
+			block = 1
+			outfile = open('DXE' + str(dxe) + '_' + outfilename, "wb") # TODO: try/catch for file open
+			# write ELF file header
+			outfile.write('\x7F\x45\x4C\x46\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x6A\x00\x01\x00\x00\x00')
+		# if(flags.b.fill == 1):
+		# 	for _ in range(bytecount):
+		# 		outfile.write(argument_bytes)
+		# else:
+		# 	buffer = infile.read(bytecount)
+		# 	outfile.write(buffer)
+		outfile.write(header)
+		outfile.write(target_bytes)
+		outfile.write(bytecount_bytes)
+		outfile.write(argument_bytes)
+		if bytecount > 0 and flags.b.fill == 0:
 			buffer = infile.read(bytecount)
 			outfile.write(buffer)
 
-		print("[written] block {0} with {1} Bytes".format(i, bytecount))
-		i=i+1
+		print("[written] block {} with {} ({}) bytes, target {}, flags {} (final: {}, first: {}, indirect: {}, ignore: {}, init: {}, callback: {}, quickboot: {}, fill: {}), arg {}".format(block, bytecount, hex(bytecount), binascii.hexlify(bytearray(target_bytes)), hex(flags.asbyte), flags.b.final, flags.b.first, flags.b.indirect, flags.b.ignore, flags.b.init, flags.b.callback, flags.b.quickboot, flags.b.fill, binascii.hexlify(bytearray(argument_bytes))))
+		block = block + 1
 	outfile.close()
 	infile.close()
 		
